@@ -17,6 +17,7 @@ import (
 type archive struct {
 	f      io.ReaderAt // *os.File en producción; bytes.Reader en el fuzzing
 	closer io.Closer   // nil para archives in-memory
+	path   string      // ruta del .zim en disco; "" para archives in-memory (fuzzing)
 	size   int64
 	hdr    header
 	mimes  []string
@@ -54,6 +55,7 @@ func openArchive(ctx context.Context, path string, limits Limits) (Archive, erro
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	a.path = path
 	return a, nil
 }
 
@@ -236,9 +238,20 @@ func (a *archive) Metadata(name string) (string, error) {
 
 // TitleIndex (Fase B): construcción perezosa y cacheada — leer y normalizar los
 // títulos de un ZIM de millones de entradas cuesta segundos y decenas de MB, así
-// que solo se paga si el suggest se usa, y una sola vez.
+// que solo se paga si el suggest se usa, y una sola vez. Con el caché de disco
+// (`<zim>.tix`, titleindex_cache.go) ese coste se paga UNA VEZ EN LA VIDA del
+// fichero: los arranques siguientes cargan el índice ya hecho.
 func (a *archive) TitleIndex() (TitleIndex, error) {
-	a.titleOnce.Do(func() { a.titleIdx, a.titleErr = a.buildTitleIndex() })
+	a.titleOnce.Do(func() {
+		if ti := a.loadTitleIndexCache(); ti != nil {
+			a.titleIdx = ti
+			return
+		}
+		a.titleIdx, a.titleErr = a.buildTitleIndex()
+		if a.titleErr == nil {
+			a.saveTitleIndexCache(a.titleIdx) // best-effort: sin caché no pasa nada
+		}
+	})
 	if a.titleErr != nil {
 		return nil, a.titleErr
 	}

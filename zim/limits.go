@@ -29,6 +29,12 @@ type Limits struct {
 	// Wikipedia ES de 4.17M artículos). ZIM_SUGGEST_WORDS=0 lo desactiva en la Pi
 	// con la RAM justa: el suggest queda como prefijo del título completo.
 	SuggestWordIndex bool
+
+	// TitleIndexCache: persistir el índice de títulos en disco (`<zim>.tix`, junto
+	// al fichero) y cargarlo en los siguientes arranques en vez de reconstruirlo —
+	// el rebuild de la Wikipedia ES cuesta ~20 s por arranque; la carga, una
+	// fracción. ZIM_TITLE_CACHE=0 lo desactiva (p. ej. pool de solo lectura).
+	TitleIndexCache bool
 }
 
 // DefaultLimits: defaults conservadores (pensados para la Pi). Se suben en x86 vía
@@ -45,6 +51,7 @@ func DefaultLimits() Limits {
 		MaxBlobMB:                2048,
 		MaxDecompressionRatio:    200,
 		SuggestWordIndex:         true, // paridad con kiwix por defecto; se apaga por env
+		TitleIndexCache:          true,
 	}
 }
 
@@ -64,6 +71,9 @@ func LimitsFromEnv() Limits {
 	envInt64(&l.MaxDecompressionRatio, "ZIM_MAX_DECOMPRESSION_RATIO")
 	if os.Getenv("ZIM_SUGGEST_WORDS") == "0" {
 		l.SuggestWordIndex = false
+	}
+	if os.Getenv("ZIM_TITLE_CACHE") == "0" {
+		l.TitleIndexCache = false
 	}
 	return l
 }
