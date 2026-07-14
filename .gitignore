@@ -1,0 +1,22 @@
+# binarios compilados (zimtool se construye con `go build ./cmd/zimtool`)
+*.exe
+
+# índices FTS de prueba (se regeneran; ver README)
+*.bleve/
+
+# copia antigua duplicada: otro repo git anidado de una sesión previa, código
+# pre-auditoría. El código bueno es ESTE (la raíz). No debe entrar al repo.
+/zim-engine/
+
+# config local del harness (rutas y permisos de esta máquina)
+.claude/
+
+# documentación de diseño/bitácora: se queda en local, no en el repo público
+# (compara con otros motores y no procede publicarlo). Un README neutro se puede
+# añadir a mano con `git add -f README.md` si algún día se quiere.
+*.md
+
+# artefactos de Go
+/vendor/
+*.test
+*.out
