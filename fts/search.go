@@ -37,6 +37,13 @@ type Index struct {
 //   - manifiesto ausente  → build interrumpido o índice pre-manifiesto: reindexar
 //   - Matches falla       → índice de otro ZIM, otro entryCount u otro esquema
 func Open(dir string, a zim.Archive) (*Index, error) {
+	// Reconcile primero (INDEXER-CRASH-SAFETY.md, Capa 2): tras un arranque sucio
+	// puede haber un build completo sin cambiar (.new) que hay que promover, o
+	// restos de un swap a medias que limpiar. En estado sano son un par de stat()
+	// sin efecto. Así "abrir" cura un corte anterior sin intervención.
+	if err := Reconcile(dir); err != nil {
+		return nil, fmt.Errorf("reconciliar índice tras arranque sucio: %w", err)
+	}
 	m, err := ReadManifest(dir)
 	if err != nil {
 		return nil, fmt.Errorf("índice sin manifiesto válido (¿build a medias?): %w", err)

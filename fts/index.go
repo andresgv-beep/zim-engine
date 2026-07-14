@@ -69,9 +69,16 @@ func Build(ctx context.Context, a zim.Archive, dir string, opts BuildOptions) (i
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 512
 	}
-	// Build = reconstrucción total. Un índice a medias de un intento anterior no
-	// debe contaminar: se borra y se rehace (determinismo, §5).
-	if err := os.RemoveAll(dir); err != nil {
+	// Publicación atómica (INDEXER-CRASH-SAFETY.md, Capa 1): se construye en un
+	// directorio APARTE y solo al final se cambia por el bueno de golpe. Así el
+	// índice vivo NUNCA se toca durante el build → un apagón a mitad no lo corrompe
+	// ni lo pierde. Reconcile primero, por si un swap anterior quedó a medias:
+	// restaura el índice bueno ANTES de tocar nada (si no, lo pisaríamos).
+	if err := Reconcile(dir); err != nil {
+		return 0, err
+	}
+	building := buildingDir(dir)
+	if err := os.RemoveAll(building); err != nil { // restos de un build anterior
 		return 0, err
 	}
 
@@ -80,7 +87,7 @@ func Build(ctx context.Context, a zim.Archive, dir string, opts BuildOptions) (i
 	// segmentos al cerrar y NO deja huérfanos en disco — medido: el camino vivo
 	// dejaba ~2× de disco fantasma (28.8 vs 14.4 MiB en es_climate) hasta una
 	// purga asíncrona de scorch con la que no se puede contar.
-	bld, err := bleve.NewBuilder(dir, buildIndexMapping(opts.Language, opts.StoreBody),
+	bld, err := bleve.NewBuilder(building, buildIndexMapping(opts.Language, opts.StoreBody),
 		map[string]interface{}{"batchSize": opts.BatchSize})
 	if err != nil {
 		return 0, err
@@ -243,12 +250,12 @@ consume:
 	// cerrar el builder, borrar el directorio y reportar la causa real.
 	if indexErr != nil {
 		bld.Close()
-		os.RemoveAll(dir)
+		os.RemoveAll(building)
 		return indexed, indexErr
 	}
 	if err := ctx.Err(); err != nil {
 		bld.Close()
-		os.RemoveAll(dir)
+		os.RemoveAll(building)
 		return indexed, err
 	}
 
@@ -263,7 +270,7 @@ consume:
 			defer func() { _ = recover() }()
 			bld.Close()
 		}()
-		os.RemoveAll(dir)
+		os.RemoveAll(building)
 		return 0, nil
 	}
 
@@ -272,21 +279,28 @@ consume:
 	// (Skipped no cuenta: una página sin texto es legítima, no un fallo.)
 	if tally.Candidates > 0 && tally.Failed*100 > tally.Candidates {
 		bld.Close()
-		os.RemoveAll(dir)
+		os.RemoveAll(building)
 		return indexed, fmt.Errorf("%w: %d de %d candidatos fallaron (>1%%): índice incompleto, no se escribe manifiesto",
 			ErrIncompleteBuild, tally.Failed, tally.Candidates)
 	}
 
-	// Close del Builder = el merge final: consolida todos los segmentos y deja el
-	// índice compacto y listo para abrir en solo-lectura.
+	// Close del Builder = el merge final: consolida los segmentos y deja el índice
+	// compacto. Aún en el directorio de construcción, no en el vivo.
 	if err := bld.Close(); err != nil {
 		return indexed, err
 	}
 
-	// El manifiesto va DESPUÉS del Close: su presencia certifica build completo
-	// Y honesto (el tally viajó dentro). Un índice sin manifiesto es un build
-	// interrumpido → se trata como inexistente.
-	if err := writeManifest(dir, newManifest(a, opts, tally)); err != nil {
+	// El manifiesto va DESPUÉS del Close: su presencia certifica build completo Y
+	// honesto (el tally viaja dentro). Se escribe en building; a partir de aquí,
+	// "building con manifiesto" = índice listo para publicar (lo que Reconcile
+	// reconoce y promueve si un corte pilla el swap por medio).
+	if err := writeManifest(building, newManifest(a, opts, tally)); err != nil {
+		return indexed, err
+	}
+
+	// Cambio atómico building → dir. AQUÍ, y solo aquí, se sustituye el índice
+	// vivo, de una vez y con el nuevo ya entero y sellado (Capa 1).
+	if err := promote(building, dir); err != nil {
 		return indexed, err
 	}
 
